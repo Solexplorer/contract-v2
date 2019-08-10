@@ -77,6 +77,29 @@ interface CDAIInterface {
     function borrowBalanceCurrent(address account) external returns (uint);
 }
 
+interface ITokenInterface {
+    function mint(
+        address receiver,
+        uint256 depositAmount
+        ) external returns (uint); // For ERC20
+    function burn(address receiver, uint256 burnAmount) external returns (uint);
+    function tokenPrice() public view returns (uint);
+    function transfer(address, uint) external returns (bool);
+    function transferFrom(address, address, uint) external returns (bool);
+    function balanceOf(address) external view returns (uint);
+}
+
+interface IDAIInterface {
+  function mint(
+      address receiver,
+      uint256 depositAmount
+      ) external returns (uint); // For ERC20
+}
+
+interface IETHInterface {
+
+}
+
 
 contract DSMath {
 
@@ -125,6 +148,8 @@ contract Helper is DSMath {
     address public ude = 0x09cabEC1eAd1c0Ba254B09efb3EE13841712bE14; // Uniswap DAI Exchange
     address public cEth = 0x4Ddc2D193948926D02f9B1fE9e1daa0718270ED5;
     address public cDai = 0xF5DCe57282A584D2746FaF1593d3121Fcac444dC;
+    address public iDai = 0x9aefbe3e4c09faa4b6bcf03bccbecbe98a470596;
+    address public iEth = 0x3FA518Cf66C9B514A4E58233910D8fa3D5c6a160;
 
     address public feeOne = 0xd8db02A498E9AFbf4A32BC006DC1940495b4e592;
     address public feeTwo = 0xa7615CD307F323172331865181DC8b80a2834324;
@@ -350,8 +375,64 @@ contract MakerResolver is CompoundResolver {
 
 }
 
+contract FulcrumResolver is MakerResolver {
 
-contract BridgeResolver is MakerResolver {
+  /**
+   * @dev Redeem ETH/ERC20 and mint Fulcrum Tokens
+   * @param tokenAmt Amount of token To Redeem
+   */
+  function burn(address iErc20, uint tokenAmt) internal {
+      if (tokenAmt > 0) {
+          require(ITokenInterface(iErc20).burn(tokenAmt) == 0, "something went wrong");
+      }
+  }
+
+  /**
+   * @dev Deposit ETH/ERC20 and mint Compound Tokens
+   */
+  function mintIETH(uint ethAmt) internal {
+      if (ethAmt > 0) {
+          CETHInterface cToken = CETHInterface(cEth);
+          cToken.mint.value(ethAmt)();
+          uint exchangeRate = CTokenInterface(cEth).exchangeRateCurrent();
+          uint cEthToReturn = wdiv(ethAmt, exchangeRate);
+          cEthToReturn = wmul(cEthToReturn, exchangeRate) <= ethAmt ? cEthToReturn : cEthToReturn - 1;
+          require(cToken.transfer(msg.sender, cEthToReturn), "CETH Transfer failed");
+      }
+  }
+
+  /**
+   * @dev Deposit ETH/ERC20 and mint Compound Tokens
+   */
+  function fetchCETH(uint ethAmt) internal {
+      if (ethAmt > 0) {
+          CTokenInterface cToken = CTokenInterface(cEth);
+          uint exchangeRate = cToken.exchangeRateCurrent();
+          uint cTokenAmt = wdiv(ethAmt, exchangeRate);
+          cTokenAmt = wmul(cTokenAmt, exchangeRate) <= ethAmt ? cTokenAmt : cTokenAmt - 1;
+          require(ERC20Interface(cEth).transferFrom(msg.sender, address(this), cTokenAmt), "Contract Approved?");
+      }
+  }
+
+  /**
+   * @dev If col/debt > user's balance/borrow. Then set max
+   */
+  function checkCompound(uint ethAmt, uint daiAmt) internal returns (uint ethCol, uint daiDebt) {
+      CTokenInterface cEthContract = CTokenInterface(cEth);
+      uint cEthBal = cEthContract.balanceOf(msg.sender);
+      uint ethExchangeRate = cEthContract.exchangeRateCurrent();
+      ethCol = wmul(cEthBal, ethExchangeRate);
+      ethCol = wdiv(ethCol, ethExchangeRate) <= cEthBal ? ethCol : ethCol - 1;
+      ethCol = ethCol <= ethAmt ? ethCol : ethAmt; // Set Max if amount is greater than the Col user have
+
+      daiDebt = CDAIInterface(cDai).borrowBalanceCurrent(msg.sender);
+      daiDebt = daiDebt <= daiAmt ? daiDebt : daiAmt; // Set Max if amount is greater than the Debt user have
+  }
+
+}
+
+
+contract BridgeResolver is FulcrumResolver {
 
     event LogMakerToCompound(uint cdpNum, uint ethAmt, uint daiAmt, uint fees, address owner);
     event LogCompoundToMaker(uint cdpNum, uint ethAmt, uint daiAmt, uint fees, address owner);
